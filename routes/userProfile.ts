@@ -21,6 +21,15 @@ function favicon () {
   return utils.extractFilename(config.get('application.favicon'))
 }
 
+function sanitizeUsername (val: string): string {
+  let sanitized = (val || '').replace(/[\r\n\u2028\u2029]+/g, ' ')
+  sanitized = sanitized.replace(/\\*([!#][{\[])/g, '\\$1')
+  if (!sanitized.startsWith('\\')) {
+    sanitized = '\\' + sanitized
+  }
+  return sanitized
+}
+
 export function getUserProfile () {
   return async (req: Request, res: Response, next: NextFunction) => {
     let template: string
@@ -51,9 +60,10 @@ export function getUserProfile () {
 
     let username = user.username
 
-    if (username?.match(/#{(.*)}/) !== null && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
+    const match = username?.match(/^#{(.*)}$/)
+    if (match !== null && match !== undefined && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
       req.app.locals.abused_ssti_bug = true
-      const code = username?.substring(2, username.length - 1)
+      const code = match[1]
       try {
         if (!code) {
           throw new Error('Username is null')
@@ -61,24 +71,27 @@ export function getUserProfile () {
         const singleQuoteRegex = /^'(?:[^'\\]|\\.)*'$/
         const doubleQuoteRegex = /^"(?:[^"\\]|\\.)*"$/
         const backtickRegex = /^`(?:[^`\\$]|\\.|\$(?!{))*`$/
-        const numericRegex = /^-?\d+(?:\.\d+)?$/
+        const arithmeticRegex = /^[0-9 +*/%().-]+$/
         const booleanRegex = /^(?:true|false|null|undefined)$/
 
         const isSafe = singleQuoteRegex.test(code) ||
           doubleQuoteRegex.test(code) ||
           backtickRegex.test(code) ||
-          numericRegex.test(code) ||
+          (arithmeticRegex.test(code) && /\d/.test(code)) ||
           booleanRegex.test(code)
 
         if (!isSafe) {
           throw new Error('Unsafe code execution blocked')
         }
-        username = eval(code) // eslint-disable-line no-eval
+        username = String(eval(code)) // eslint-disable-line no-eval
       } catch (err) {
-        username = '\\' + username
+        username = sanitizeUsername(user.username ?? '')
       }
     } else {
-      username = '\\' + username
+      if (username?.match(/#{(.*)}/) !== null && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
+        req.app.locals.abused_ssti_bug = true
+      }
+      username = sanitizeUsername(username ?? '')
     }
 
     const themeKey = config.get<string>('application.theme') as keyof typeof themes
